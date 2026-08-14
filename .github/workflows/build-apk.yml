@@ -5,38 +5,148 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.x"
 
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          java-version: "17"
-          distribution: "temurin"
-
+      # 1. Get the project
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
+      # 2. Install Linux dependencies
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            git \
+            zip \
+            unzip \
+            openjdk-17-jdk \
+            python3-pip \
+            python3-venv \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo6 \
+            cmake \
+            libffi-dev \
+            libssl-dev \
+            gettext \
+            build-essential
+
+      # 3. Java 17
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # 4. Python 3.14
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # 5. Install Rust
+      - name: Set up Rust
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y
+          fi
+
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+          "$HOME/.cargo/bin/rustup" default stable
+          "$HOME/.cargo/bin/rustc" --version
+          "$HOME/.cargo/bin/cargo" --version
+
+      # 6. Install Buildozer for Python 3.14
       - name: Install Buildozer
         run: |
           python -m pip install --upgrade pip
-          python -m pip install buildozer
-          python -m pip install cython
+          python -m pip install \
+            legacy-cgi \
+            setuptools \
+            "Cython==0.29.34"
 
-      - name: Install required Linux packages
+          python -m pip install \
+            git+https://github.com/kivy/buildozer.git@master
+
+          buildozer --version
+
+      # 7. Configure Buildozer for Python 3.14
+      - name: Configure Buildozer
         run: |
-          sudo apt update
-          sudo apt install -y automake libltdl-dev
+          python - <<'PY'
+          from pathlib import Path
 
+          p = Path("buildozer.spec")
+          text = p.read_text()
+
+          lines = text.splitlines()
+          output = []
+
+          found_p4a = False
+          found_api = False
+          found_ndk = False
+          found_license = False
+
+          for line in lines:
+              stripped = line.strip()
+
+              if stripped.startswith("p4a.branch"):
+                  output.append("p4a.branch = develop")
+                  found_p4a = True
+
+              elif stripped.startswith("android.api"):
+                  output.append("android.api = 36")
+                  found_api = True
+
+              elif stripped.startswith("android.ndk"):
+                  output.append("android.ndk = 28c")
+                  found_ndk = True
+
+              elif stripped.startswith("android.accept_sdk_license"):
+                  output.append("android.accept_sdk_license = True")
+                  found_license = True
+
+              else:
+                  output.append(line)
+
+          if not found_p4a:
+              output.append("")
+              output.append("p4a.branch = develop")
+
+          if not found_api:
+              output.append("")
+              output.append("android.api = 36")
+
+          if not found_ndk:
+              output.append("")
+              output.append("android.ndk = 28c")
+
+          if not found_license:
+              output.append("")
+              output.append("android.accept_sdk_license = True")
+
+          p.write_text("\n".join(output) + "\n")
+          PY
+
+          echo "===== Buildozer configuration ====="
+          grep -E "p4a.branch|android.api|android.ndk|android.accept_sdk_license" buildozer.spec || true
+
+      # 8. Build APK
       - name: Build NEXORA APK
         run: |
           buildozer -v android debug
 
+      # 9. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
