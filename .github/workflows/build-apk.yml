@@ -5,298 +5,141 @@ on:
 
 jobs:
   build:
-    name: Build NEXORA APK
     runs-on: ubuntu-24.04
 
-    env:
-      P4A_RELEASE: "0"
-      PYTHONUNBUFFERED: "1"
-
     steps:
-
-      # --------------------------------------------------
-      # 1. Get NEXORA source code
-      # --------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-
-      # --------------------------------------------------
-      # 2. Java 17
-      # --------------------------------------------------
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-
-      # --------------------------------------------------
-      # 3. Python
-      # --------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-
-      # --------------------------------------------------
-      # 4. Linux dependencies
-      # --------------------------------------------------
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             git \
             zip \
             unzip \
             wget \
             curl \
-            build-essential \
+            openjdk-17-jdk \
+            python3-pip \
+            python3-venv \
             autoconf \
             automake \
+            autopoint \
             libtool \
             pkg-config \
             cmake \
-            gettext \
-            autopoint \
+            libffi-dev \
+            libssl-dev \
+            libltdl-dev \
             zlib1g-dev \
             libncurses5-dev \
-            libncursesw5-dev \
-            libtinfo6 \
-            libffi-dev \
-            libssl-dev
+            libncursesw5-dev
 
-
-      # --------------------------------------------------
-      # 5. Install Android command-line tools
-      # --------------------------------------------------
-      - name: Install Android SDK command line tools
-        run: |
-          mkdir -p "$HOME/android-sdk/cmdline-tools"
-
-          cd /tmp
-
-          wget -q \
-            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
-            -O commandlinetools.zip
-
-          unzip -q commandlinetools.zip
-
-          mkdir -p "$HOME/android-sdk/cmdline-tools/latest"
-
-          mv cmdline-tools/* \
-            "$HOME/android-sdk/cmdline-tools/latest/"
-
-          echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
-
-          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$HOME/android-sdk/platform-tools" >> "$GITHUB_PATH"
-          echo "$HOME/android-sdk/build-tools/35.0.0" >> "$GITHUB_PATH"
-
-
-      # --------------------------------------------------
-      # 6. Accept Android licenses
-      # --------------------------------------------------
-      - name: Accept Android SDK licenses
-        run: |
-          yes | sdkmanager --licenses || true
-
-
-      # --------------------------------------------------
-      # 7. Install Android SDK packages
-      # --------------------------------------------------
-      - name: Install Android SDK packages
-        run: |
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-          echo "Android SDK packages installed."
-
-          ls -la "$ANDROID_HOME/build-tools/35.0.0"
-
-          test -f "$ANDROID_HOME/build-tools/35.0.0/aidl"
-
-
-      # --------------------------------------------------
-      # 8. Install Buildozer
-      # --------------------------------------------------
       - name: Install Buildozer
         run: |
           python -m pip install --upgrade pip
+          python -m pip install --upgrade buildozer cython
 
-          python -m pip install \
-            setuptools \
-            wheel \
-            "cython==0.29.34"
-
-          python -m pip install \
-            git+https://github.com/kivy/buildozer.git
-
-
-      # --------------------------------------------------
-      # 9. Prepare Buildozer SDK directory
-      # --------------------------------------------------
-      - name: Prepare Buildozer Android SDK
+      - name: Prepare Buildozer SDK
+        shell: bash
         run: |
-          mkdir -p "$HOME/.buildozer/android/platform"
+          set -e
 
-          rm -rf "$HOME/.buildozer/android/platform/android-sdk"
+          SDK="$HOME/.buildozer/android/platform/android-sdk"
 
-          ln -s \
-            "$ANDROID_HOME" \
-            "$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$SDK/cmdline-tools"
 
-          echo "Buildozer SDK:"
-          ls -la "$HOME/.buildozer/android/platform/"
+          cd /tmp
 
-          echo "Build-Tools:"
-          ls -la "$HOME/.buildozer/android/platform/android-sdk/build-tools/35.0.0"
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+            -O commandlinetools.zip
 
-          echo "AIDL:"
-          "$HOME/.buildozer/android/platform/android-sdk/build-tools/35.0.0/aidl" || true
+          rm -rf "$SDK/cmdline-tools/latest"
+          mkdir -p "$SDK/cmdline-tools/latest"
 
+          unzip -q commandlinetools.zip -d "$SDK/cmdline-tools/latest"
 
-      # --------------------------------------------------
-      # 10. Force SDK license acceptance inside Buildozer
-      # --------------------------------------------------
-      - name: Configure buildozer.spec
+          if [ -d "$SDK/cmdline-tools/latest/cmdline-tools" ]; then
+            mv "$SDK/cmdline-tools/latest/cmdline-tools/"* \
+               "$SDK/cmdline-tools/latest/"
+            rmdir "$SDK/cmdline-tools/latest/cmdline-tools"
+          fi
+
+          export ANDROIDSDK="$SDK"
+          export ANDROID_HOME="$SDK"
+          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/platform-tools:$PATH"
+
+          echo "ANDROIDSDK=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+
+          echo "Checking sdkmanager..."
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --version
+
+      - name: Accept Android SDK licenses
+        shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
+          set -e
 
-          p = Path("buildozer.spec")
+          SDK="$HOME/.buildozer/android/platform/android-sdk"
 
-          if not p.exists():
-              raise SystemExit("ERROR: buildozer.spec was not found")
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+            --licenses > /dev/null || true
 
-          text = p.read_text()
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -e
 
-          def replace_or_add(text, key, value):
-              lines = text.splitlines()
-              found = False
-              output = []
+          SDK="$HOME/.buildozer/android/platform/android-sdk"
 
-              for line in lines:
-                  stripped = line.strip()
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;33.0.2"
 
-                  if stripped.startswith(key + " ="):
-                      output.append(f"{key} = {value}")
-                      found = True
-                  else:
-                      output.append(line)
-
-              if not found:
-                  output.append("")
-                  output.append(f"{key} = {value}")
-
-              return "\n".join(output)
-
-          text = replace_or_add(
-              text,
-              "android.accept_sdk_license",
-              "True"
-          )
-
-          text = replace_or_add(
-              text,
-              "android.sdk_path",
-              "/home/runner/.buildozer/android/platform/android-sdk"
-          )
-
-          text = replace_or_add(
-              text,
-              "android.api",
-              "35"
-          )
-
-          text = replace_or_add(
-              text,
-              "android.minapi",
-              "23"
-          )
-
-          text = replace_or_add(
-              text,
-              "android.ndk_api",
-              "23"
-          )
-
-          p.write_text(text)
-          PY
-
-          echo "===== Buildozer Android settings ====="
-
-          grep -E \
-            "android.accept_sdk_license|android.sdk_path|android.api|android.minapi|android.ndk_api" \
-            buildozer.spec || true
-
-
-      # --------------------------------------------------
-      # 11. Verify Buildozer SDK and AIDL
-      # --------------------------------------------------
-      - name: Verify Buildozer SDK
+      - name: Verify Android SDK
+        shell: bash
         run: |
           SDK="$HOME/.buildozer/android/platform/android-sdk"
 
-          echo "SDK = $SDK"
+          echo "SDK: $SDK"
+          echo "sdkmanager:"
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --version
 
-          test -d "$SDK"
+          echo "adb:"
+          "$SDK/platform-tools/adb" version
 
-          echo "Installed Build-Tools:"
-          find "$SDK/build-tools" -maxdepth 2 -type f -name aidl -print
+          echo "Build tools:"
+          ls -la "$SDK/build-tools"
 
-          AIDL="$SDK/build-tools/35.0.0/aidl"
+          echo "Platforms:"
+          ls -la "$SDK/platforms"
 
-          if [ ! -f "$AIDL" ]; then
-            echo "ERROR: Buildozer SDK does not contain AIDL."
-            exit 1
-          fi
-
-          echo "AIDL FOUND:"
-          "$AIDL" || true
-
-
-      # --------------------------------------------------
-      # 12. Clean previous Buildozer build
-      # --------------------------------------------------
-      - name: Clean Buildozer build
-        run: |
-          rm -rf .buildozer
-
-
-      # --------------------------------------------------
-      # 13. Re-create Buildozer SDK link after clean
-      # --------------------------------------------------
-      - name: Restore Buildozer SDK
-        run: |
-          mkdir -p "$HOME/.buildozer/android/platform"
-
-          ln -s \
-            "$ANDROID_HOME" \
-            "$HOME/.buildozer/android/platform/android-sdk"
-
-          echo "Buildozer SDK restored."
-
-          ls -la \
-            "$HOME/.buildozer/android/platform/android-sdk/build-tools/35.0.0/aidl"
-
-
-      # --------------------------------------------------
-      # 14. Build NEXORA APK
-      # --------------------------------------------------
       - name: Build NEXORA APK
+        shell: bash
         run: |
+          set -e
+
+          export ANDROIDSDK="$HOME/.buildozer/android/platform/android-sdk"
+          export ANDROID_HOME="$ANDROIDSDK"
+          export PATH="$ANDROIDSDK/cmdline-tools/latest/bin:$ANDROIDSDK/platform-tools:$PATH"
+
           buildozer -v android debug
 
-
-      # --------------------------------------------------
-      # 15. Upload APK
-      # --------------------------------------------------
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
