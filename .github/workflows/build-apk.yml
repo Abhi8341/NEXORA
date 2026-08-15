@@ -5,39 +5,187 @@ on:
 
 jobs:
   build:
+    name: Build NEXORA APK
     runs-on: ubuntu-24.04
 
     steps:
+
+      # 1. Download your NEXORA project
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      # 2. Install Java 17
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # 3. Install Android SDK command-line tools
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+          packages: "platform-tools platforms;android-35 build-tools;37.0.0"
+
+      # 4. Install Linux build dependencies
+      - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            git zip unzip \
-            openjdk-17-jdk \
-            python3-pip python3-venv \
-            autoconf libtool pkg-config \
-            zlib1g-dev libncurses5-dev \
-            libncursesw5-dev libtinfo6 \
-            cmake libffi-dev libssl-dev \
-            automake autopoint gettext
 
+          sudo apt-get install -y \
+            git \
+            zip \
+            unzip \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo6 \
+            cmake \
+            libffi-dev \
+            libssl-dev \
+            gettext \
+            autopoint \
+            build-essential
+
+      # 5. Make absolutely sure Android licenses are accepted
+      - name: Accept Android licenses
+        run: |
+          yes | sdkmanager --licenses || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;37.0.0"
+
+      # 6. Verify AIDL exists
+      - name: Verify Android AIDL
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          which sdkmanager || true
+
+          find "$ANDROID_HOME" \
+            -type f \
+            -name aidl \
+            -print
+
+          if find "$ANDROID_HOME" -type f -name aidl | grep -q aidl; then
+            echo "AIDL FOUND"
+          else
+            echo "ERROR: AIDL NOT FOUND"
+            exit 1
+          fi
+
+      # 7. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
-      - name: Install Buildozer
+      # 8. Install Python build dependencies
+      - name: Install Python build dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install buildozer cython
 
-      - name: Build APK
+          python -m pip install \
+            legacy-cgi \
+            setuptools \
+            "Cython==0.29.34"
+
+      # 9. Install current Buildozer
+      - name: Install Buildozer
+        run: |
+          python -m pip install \
+            git+https://github.com/kivy/buildozer.git
+
+          buildozer --version
+
+      # 10. Configure Buildozer
+      - name: Configure Buildozer
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("buildozer.spec")
+
+          if not path.exists():
+              raise SystemExit("ERROR: buildozer.spec was not found")
+
+          text = path.read_text()
+          lines = text.splitlines()
+
+          result = []
+
+          found_branch = False
+          found_api = False
+          found_ndk = False
+          found_license = False
+
+          for line in lines:
+              stripped = line.strip()
+
+              if stripped.startswith("p4a.branch"):
+                  result.append("p4a.branch = develop")
+                  found_branch = True
+
+              elif stripped.startswith("android.api"):
+                  result.append("android.api = 36")
+                  found_api = True
+
+              elif stripped.startswith("android.ndk"):
+                  result.append("android.ndk = 28c")
+                  found_ndk = True
+
+              elif stripped.startswith("android.accept_sdk_license"):
+                  result.append("android.accept_sdk_license = True")
+                  found_license = True
+
+              else:
+                  result.append(line)
+
+          if not found_branch:
+              result.append("")
+              result.append("p4a.branch = develop")
+
+          if not found_api:
+              result.append("")
+              result.append("android.api = 36")
+
+          if not found_ndk:
+              result.append("")
+              result.append("android.ndk = 28c")
+
+          if not found_license:
+              result.append("")
+              result.append("android.accept_sdk_license = True")
+
+          path.write_text("\n".join(result) + "\n")
+          PY
+
+          echo "===== NEXORA Buildozer settings ====="
+
+          grep -E \
+            "p4a.branch|android.api|android.ndk|android.accept_sdk_license" \
+            buildozer.spec || true
+
+      # 11. Clean old Buildozer Android cache
+      - name: Clean old Buildozer cache
+        run: |
+          rm -rf .buildozer
+
+      # 12. Build APK
+      - name: Build NEXORA APK
         run: |
           buildozer -v android debug
 
+      # 13. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
