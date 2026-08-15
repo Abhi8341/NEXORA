@@ -3,26 +3,59 @@ name: Build NEXORA Public APK
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    name: Build NEXORA APK
+    runs-on: ubuntu-22.04
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+      # Buildozer's own Android SDK
+      ANDROID_HOME: /home/runner/.buildozer/android/platform/android-sdk
+      ANDROID_SDK_ROOT: /home/runner/.buildozer/android/platform/android-sdk
+
+      # Android versions
+      ANDROIDAPI: "35"
+      NDKAPI: "23"
+      ANDROIDNDKVER: "28c"
+
+      # Prevent interactive p4a prompts
+      PYTHONFORANDROID_PREREQUISITES_INSTALL_INTERACTIVE: "0"
 
     steps:
 
+      # ---------------------------------------------------------
+      # 1. Checkout project
+      # ---------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ---------------------------------------------------------
+      # 2. Setup Python
+      # ---------------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ---------------------------------------------------------
+      # 3. Setup Java 17
+      # ---------------------------------------------------------
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
+      # ---------------------------------------------------------
+      # 4. Install Linux dependencies
+      # ---------------------------------------------------------
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -31,60 +64,310 @@ jobs:
             git \
             zip \
             unzip \
-            wget \
             curl \
+            wget \
             openjdk-17-jdk \
             python3-pip \
             python3-venv \
             autoconf \
             automake \
-            autopoint \
             libtool \
             pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo5 \
             cmake \
             libffi-dev \
             libssl-dev \
-            libltdl-dev \
-            zlib1g-dev \
-            libncurses5-dev \
-            libncursesw5-dev
+            build-essential
 
+      # ---------------------------------------------------------
+      # 5. Install Buildozer
+      # ---------------------------------------------------------
       - name: Install Buildozer
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           python -m pip install --upgrade buildozer
-          python -m pip install "cython<3"
 
-      - name: Prepare Buildozer configuration
+      # ---------------------------------------------------------
+      # 6. Prepare Buildozer Android SDK directory
+      # ---------------------------------------------------------
+      - name: Prepare Buildozer Android SDK
+        run: |
+          mkdir -p "$ANDROID_HOME"
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          java -version
+          python --version
+          buildozer --version
+
+      # ---------------------------------------------------------
+      # 7. Install Google's Android command-line tools
+      # ---------------------------------------------------------
+      - name: Install Android command-line tools
+        run: |
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+
+          cd /tmp
+
+          wget -q \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip \
+            -O commandlinetools.zip
+
+          rm -rf "$ANDROID_HOME/cmdline-tools/latest"
+
+          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+
+          unzip -q commandlinetools.zip \
+            -d "$ANDROID_HOME/cmdline-tools/latest"
+
+          # Google ZIP contains a cmdline-tools directory.
+          if [ -d "$ANDROID_HOME/cmdline-tools/latest/cmdline-tools" ]; then
+            mv \
+              "$ANDROID_HOME/cmdline-tools/latest/cmdline-tools/"* \
+              "$ANDROID_HOME/cmdline-tools/latest/"
+            rmdir "$ANDROID_HOME/cmdline-tools/latest/cmdline-tools"
+          fi
+
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+          sdkmanager --version
+
+      # ---------------------------------------------------------
+      # 8. Accept Android SDK licenses
+      # ---------------------------------------------------------
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+          mkdir -p "$ANDROID_HOME/licenses"
+
+          set +e
+
+          yes | sdkmanager --licenses > /tmp/sdk-licenses.log 2>&1
+          SDK_RC=${PIPESTATUS[1]}
+
+          cat /tmp/sdk-licenses.log
+
+          echo "sdkmanager license exit code: $SDK_RC"
+
+          if [ "$SDK_RC" -ne 0 ]; then
+            echo "sdkmanager license command returned an error."
+            exit "$SDK_RC"
+          fi
+
+      # ---------------------------------------------------------
+      # 9. Install Android SDK packages
+      # ---------------------------------------------------------
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      # ---------------------------------------------------------
+      # 10. Install Android NDK 28c
+      # ---------------------------------------------------------
+      - name: Install Android NDK 28c
+        shell: bash
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+          sdkmanager "ndk;28.0.13004108"
+
+      # ---------------------------------------------------------
+      # 11. Verify Android SDK
+      # ---------------------------------------------------------
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+          echo "===== SDK ====="
+          echo "$ANDROID_HOME"
+
+          echo "===== SDK Manager ====="
+          sdkmanager --version
+
+          echo "===== Build Tools ====="
+          ls -la "$ANDROID_HOME/build-tools"
+
+          echo "===== Platforms ====="
+          ls -la "$ANDROID_HOME/platforms"
+
+          echo "===== NDK ====="
+          ls -la "$ANDROID_HOME/ndk"
+
+          echo "===== AIDL ====="
+          find "$ANDROID_HOME/build-tools" \
+            -name aidl \
+            -type f \
+            -print
+
+      # ---------------------------------------------------------
+      # 12. Make sure Buildozer uses this exact SDK
+      # ---------------------------------------------------------
+      - name: Configure Buildozer
+        shell: bash
         run: |
           if [ ! -f buildozer.spec ]; then
             echo "ERROR: buildozer.spec was not found."
             exit 1
           fi
 
-          echo "Buildozer spec found."
+          python - <<'PY'
+          from pathlib import Path
 
-          grep -q "^android.accept_sdk_license" buildozer.spec || \
-            sed -i '/^\[app\]/a android.accept_sdk_license = True' buildozer.spec
+          p = Path("buildozer.spec")
+          text = p.read_text()
 
-          echo "SDK license setting:"
-          grep "android.accept_sdk_license" buildozer.spec || true
+          replacements = {
+              "android.accept_sdk_license = False":
+                  "android.accept_sdk_license = True",
 
+              "# android.accept_sdk_license = False":
+                  "android.accept_sdk_license = True",
+
+              "android.sdk_path =":
+                  "android.sdk_path = /home/runner/.buildozer/android/platform/android-sdk",
+
+              "#android.sdk_path =":
+                  "android.sdk_path = /home/runner/.buildozer/android/platform/android-sdk",
+          }
+
+          for old, new in replacements.items():
+              text = text.replace(old, new)
+
+          if "android.accept_sdk_license = True" not in text:
+              marker = "[app]"
+              if marker in text:
+                  text = text.replace(
+                      marker,
+                      marker + "\n\nandroid.accept_sdk_license = True",
+                      1
+                  )
+
+          if "android.sdk_path = /home/runner/.buildozer/android/platform/android-sdk" not in text:
+              marker = "[app]"
+              if marker in text:
+                  text = text.replace(
+                      marker,
+                      marker + "\n\nandroid.sdk_path = /home/runner/.buildozer/android/platform/android-sdk",
+                      1
+                  )
+
+          p.write_text(text)
+          PY
+
+          echo "===== Android settings ====="
+          grep -n "android.accept_sdk_license" buildozer.spec || true
+          grep -n "android.sdk_path" buildozer.spec || true
+          grep -n "android.api" buildozer.spec || true
+          grep -n "android.ndk" buildozer.spec || true
+          grep -n "requirements" buildozer.spec || true
+
+      # ---------------------------------------------------------
+      # 13. Install Python build dependencies
+      # ---------------------------------------------------------
+      - name: Install Python build dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade cython
+          python -m pip install --upgrade virtualenv
+          python -m pip install --upgrade buildozer
+
+      # ---------------------------------------------------------
+      # 14. Clean old Android build cache
+      # ---------------------------------------------------------
+      - name: Clean old Buildozer cache
+        run: |
+          buildozer android clean || true
+
+      # ---------------------------------------------------------
+      # 15. Build APK
+      # ---------------------------------------------------------
       - name: Build NEXORA APK
         shell: bash
         run: |
-          set -e
+          export ANDROID_HOME="$HOME/.buildozer/android/platform/android-sdk"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
-          yes | buildozer -v android debug
+          export ANDROIDSDK="$ANDROID_HOME"
+          export ANDROIDAPI="35"
+          export NDKAPI="23"
+          export ANDROIDNDK="$ANDROID_HOME/ndk/28.0.13004108"
+          export ANDROIDNDKVER="28c"
 
-      - name: Check APK
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+          echo "===== FINAL BUILD ENVIRONMENT ====="
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "ANDROIDSDK=$ANDROIDSDK"
+          echo "ANDROIDAPI=$ANDROIDAPI"
+          echo "NDKAPI=$NDKAPI"
+          echo "ANDROIDNDK=$ANDROIDNDK"
+          echo "ANDROIDNDKVER=$ANDROIDNDKVER"
+
+          echo "===== SDKMANAGER ====="
+          which sdkmanager
+          sdkmanager --version
+
+          echo "===== AIDL ====="
+          find "$ANDROID_HOME/build-tools" \
+            -name aidl \
+            -type f \
+            -print
+
+          echo "===== BUILD ====="
+
+          buildozer -v android debug
+
+      # ---------------------------------------------------------
+      # 16. Find generated APK
+      # ---------------------------------------------------------
+      - name: Find APK
+        shell: bash
         run: |
-          echo "APK files:"
-          find bin -type f -name "*.apk" -print
+          echo "Searching for APK files..."
 
-      - name: Upload APK
+          find . \
+            -type f \
+            -name "*.apk" \
+            -print
+
+          APK_COUNT=$(find . -type f -name "*.apk" | wc -l)
+
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "ERROR: No APK was produced."
+            exit 1
+          fi
+
+      # ---------------------------------------------------------
+      # 17. Upload APK
+      # ---------------------------------------------------------
+      - name: Upload NEXORA APK
         uses: actions/upload-artifact@v4
         with:
           name: NEXORA-Public-APK
-          path: bin/*.apk
+          path: |
+            bin/*.apk
+            .buildozer/**/*.apk
           if-no-files-found: error
+          retention-days: 30
