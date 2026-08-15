@@ -1,8 +1,8 @@
 [app]
 
-title = My Python App
-package.name = mypythonapp
-package.domain = org.example
+title = NEXORA Public
+package.name = nexorapublic
+package.domain = org.nexora
 
 source.dir = .
 source.include_exts = py,png,jpg,jpeg,kv,json
